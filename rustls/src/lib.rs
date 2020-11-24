@@ -286,7 +286,7 @@ pub use crate::server::handy::ResolvesServerCertUsingSni;
 pub use crate::server::handy::{NoServerSessionStorage, ServerSessionMemoryCache};
 pub use crate::server::StoresServerSessions;
 pub use crate::server::{ClientHello, ProducesTickets, ResolvesServerCert};
-pub use crate::server::{ServerConfig, ServerSession};
+pub use crate::server::{ServerConfig, ServerConfigBuilder, ServerSession};
 pub use crate::session::Session;
 pub use crate::stream::{Stream, StreamOwned};
 pub use crate::suites::{BulkAlgorithm, SupportedCipherSuite, ALL_CIPHERSUITES, DEFAULT_CIPHERSUITES};

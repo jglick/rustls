@@ -146,6 +146,311 @@ impl<'a> ClientHello<'a> {
     }
 }
 
+/// Building a ServerConfig in a linker-friendly way.
+///
+/// Linker-friendly: meaning unused ciphersuites, protocol
+/// versions, key exchange mechanisms, etc. can be discarded
+/// by the linker as they'll be unreferenced.
+///
+/// Example:
+///
+/// ```ignore
+/// ServerConfigBuilder::new()
+///     .with_default_ciphersuites()
+///     .with_default_kx_groups()
+///     .without_client_auth()
+///     .with_single_cert(certs, private_key)
+///     .build();
+/// ```
+///
+/// This may be shortened to:
+/// 
+/// ```ignore
+/// ServerConfigBuilder::defaults()
+///     .without_client_auth()
+///     .with_single_cert(certs, private_key)
+///     .build();
+/// ```
+///
+/// The types used here fit together like this:
+///
+/// 1. Get a ServerConfigBuilder with `ServerConfigBuilder::new()`.
+///    You must make a decision on which ciphersuites to use, typically
+///    by calling `with_default_ciphersuites()`.
+/// 2. You now have a ServerConfigBuilderWithSuites.  You must make a decision
+///    on key exchange groups: typically by calling `with_default_kx_groups()`.
+/// 2. You now have a ServerConfigBuilderWithSuitesAndKx.  You must make
+///    a decision on how and whether to use client authentication.  Perhaps
+///    you call `without_client_auth()`.
+/// 3. You now have a ServerConfigBuilderComplete.  This object has a number
+///    of defaults you can change, or you can pass it to `ServerConfig::new`.
+pub struct ServerConfigBuilder {}
+
+impl ServerConfigBuilder {
+    /// Start building a ServerConfig.
+    pub fn new() -> ServerConfigBuilder {
+        ServerConfigBuilder {}
+    }
+
+    /// Start building a ServerConfig, and accept defaults for underlying
+    /// cryptography.
+    ///
+    /// These are safe defaults, useful for 99% of applications.
+    ///
+    /// With the returned object, you must still make decisions on
+    /// client authentication and provide server credentials -- rustls
+    /// can't provide useful defaults for these.
+    pub fn defaults() -> ServerConfigBuilderWithSuitesAndKxGroups {
+        ServerConfigBuilder::new()
+            .with_default_ciphersuites()
+            .with_default_kx_groups()
+    }
+
+    /// Choose a specific set of ciphersuites.
+    pub fn with_ciphersuites(
+        self,
+        ciphersuites: &[&'static SupportedCipherSuite],
+    ) -> ServerConfigBuilderWithSuites {
+        ServerConfigBuilderWithSuites {
+            ciphersuites: ciphersuites.to_vec(),
+        }
+    }
+
+    /// Choose the default set of ciphersuites.
+    ///
+    /// Note that this default provides only high-quality suites: there is no need
+    /// to filter out low-, export- or NULL-strength ciphersuites: rustls does not
+    /// implement these.
+    pub fn with_default_ciphersuites(self) -> ServerConfigBuilderWithSuites {
+        self.with_ciphersuites(DEFAULT_CIPHERSUITES)
+    }
+}
+
+/// A ServerConfigBuilder where we know the ciphersuites.
+pub struct ServerConfigBuilderWithSuites {
+    ciphersuites: Vec<&'static SupportedCipherSuite>,
+}
+
+impl ServerConfigBuilderWithSuites {
+    /// Choose a specific set of key exchange groups.
+    pub fn with_kx_groups(
+        self,
+        kx_groups: &[&'static SupportedKxGroup],
+    ) -> ServerConfigBuilderWithSuitesAndKxGroups {
+        ServerConfigBuilderWithSuitesAndKxGroups {
+            ciphersuites: self.ciphersuites,
+            kx_groups: kx_groups.to_vec(),
+        }
+    }
+
+    /// Choose the default set of key exchange groups.
+    ///
+    /// This is a safe default: rustls doesn't implement any poor-quality groups.
+    pub fn with_default_kx_groups(self) -> ServerConfigBuilderWithSuitesAndKxGroups {
+        self.with_kx_groups(&ALL_KX_GROUPS)
+    }
+}
+
+/// A ServerConfigBuilder where we know the ciphersuites and key exchange
+/// groups.
+pub struct ServerConfigBuilderWithSuitesAndKxGroups {
+    ciphersuites: Vec<&'static SupportedCipherSuite>,
+    kx_groups: Vec<&'static SupportedKxGroup>,
+}
+
+/// Reduce typing for the most common case.
+impl Default for ServerConfigBuilderWithSuitesAndKxGroups {
+    fn default() -> Self {
+        ServerConfigBuilder::new()
+            .with_default_ciphersuites()
+            .with_default_kx_groups()
+    }
+}
+
+impl ServerConfigBuilderWithSuitesAndKxGroups {
+    /// Choose how to verify client certificates.
+    pub fn with_client_cert_verifier(
+        self,
+        client_cert_verifier: Arc<dyn verify::ClientCertVerifier>,
+    ) -> ServerConfigBuilderWithSuitesAndClientAuth {
+        ServerConfigBuilderWithSuitesAndClientAuth {
+            ciphersuites: self.ciphersuites,
+            kx_groups: self.kx_groups,
+            verifier: client_cert_verifier,
+        }
+    }
+
+    /// Disable client authentication.
+    pub fn without_client_auth(self) -> ServerConfigBuilderWithSuitesAndClientAuth {
+        ServerConfigBuilderWithSuitesAndClientAuth {
+            ciphersuites: self.ciphersuites,
+            kx_groups: self.kx_groups,
+            verifier: verify::NoClientAuth::new(),
+        }
+    }
+}
+
+pub struct ServerConfigBuilderWithSuitesAndClientAuth {
+    ciphersuites: Vec<&'static SupportedCipherSuite>,
+    kx_groups: Vec<&'static SupportedKxGroup>,
+    verifier: Arc<dyn verify::ClientCertVerifier>,
+}
+
+impl ServerConfigBuilderWithSuitesAndClientAuth {
+    /// Sets a single certificate chain and matching private key.  This
+    /// certificate and key is used for all subsequent connections,
+    /// irrespective of things like SNI hostname.
+    ///
+    /// Note that the end-entity certificate must have the
+    /// [Subject Alternative Name](https://tools.ietf.org/html/rfc6125#section-4.1)
+    /// extension to describe, e.g., the valid DNS name. The `commonName` field is
+    /// disregarded.
+    ///
+    /// `cert_chain` is a vector of DER-encoded certificates.
+    /// `key_der` is a DER-encoded RSA, ECDSA, or Ed25519 private key.
+    ///
+    /// This function fails if `key_der` is invalid.
+    pub fn with_single_cert(
+        self,
+        cert_chain: Vec<key::Certificate>,
+        key_der: key::PrivateKey,
+    ) -> Result<ServerConfigBuilderComplete, TlsError> {
+        let resolver = handy::AlwaysResolvesChain::new(cert_chain, &key_der)?;
+        Ok(self.with_cert_resolver(Arc::new(resolver)))
+    }
+
+    /// Sets a single certificate chain, matching private key, OCSP
+    /// response and SCTs.  This certificate and key is used for all
+    /// subsequent connections, irrespective of things like SNI hostname.
+    ///
+    /// `cert_chain` is a vector of DER-encoded certificates.
+    /// `key_der` is a DER-encoded RSA, ECDSA, or Ed25519 private key.
+    /// `ocsp` is a DER-encoded OCSP response.  Ignored if zero length.
+    /// `scts` is an `SignedCertificateTimestampList` encoding (see RFC6962)
+    /// and is ignored if empty.
+    ///
+    /// This function fails if `key_der` is invalid.
+    pub fn with_single_cert_with_ocsp_and_sct(
+        self,
+        cert_chain: Vec<key::Certificate>,
+        key_der: key::PrivateKey,
+        ocsp: Vec<u8>,
+        scts: Vec<u8>,
+    ) -> Result<ServerConfigBuilderComplete, TlsError> {
+        let resolver =
+            handy::AlwaysResolvesChain::new_with_extras(cert_chain, &key_der, ocsp, scts)?;
+        Ok(self.with_cert_resolver(Arc::new(resolver)))
+    }
+
+    /// Sets a custom `ResolvesServerCert`.
+    pub fn with_cert_resolver(
+        self,
+        resolver: Arc<dyn ResolvesServerCert>,
+    ) -> ServerConfigBuilderComplete {
+        ServerConfigBuilderComplete {
+            ciphersuites: self.ciphersuites,
+            kx_groups: self.kx_groups,
+            verifier: self.verifier,
+            cert_resolver: resolver,
+            optional: Default::default(),
+        }
+    }
+}
+
+/// Items in ServerConfig where we hope to provide good, generally-applicable
+/// defaults.
+///
+/// Names and meanings match ServerConfig.
+struct ServerConfigOptions {
+    ignore_client_order: bool,
+    mtu: Option<usize>,
+    session_storage: Arc<dyn StoresServerSessions + Send + Sync>,
+    ticketer: Arc<dyn ProducesTickets>,
+    alpn_protocols: Vec<Vec<u8>>,
+    versions: Vec<ProtocolVersion>,
+    key_log: Arc<dyn KeyLog>,
+}
+
+impl Default for ServerConfigOptions {
+    fn default() -> Self {
+        Self {
+            ignore_client_order: false,
+            mtu: None,
+            session_storage: handy::ServerSessionMemoryCache::new(256),
+            ticketer: Arc::new(handy::NeverProducesTickets {}),
+            alpn_protocols: Vec::new(),
+            versions: vec![ProtocolVersion::TLSv1_3, ProtocolVersion::TLSv1_2],
+            key_log: Arc::new(NoKeyLog {}),
+        }
+    }
+}
+
+/// A ServerConfigBuilder where we know all mandatory configuration.
+pub struct ServerConfigBuilderComplete {
+    ciphersuites: Vec<&'static SupportedCipherSuite>,
+    kx_groups: Vec<&'static SupportedKxGroup>,
+    verifier: Arc<dyn verify::ClientCertVerifier>,
+    cert_resolver: Arc<dyn ResolvesServerCert>,
+    optional: ServerConfigOptions,
+}
+
+impl ServerConfigBuilderComplete {
+    pub fn build(self) -> ServerConfig {
+        ServerConfig {
+            ciphersuites: self.ciphersuites,
+            kx_groups: self.kx_groups,
+            ignore_client_order: self.optional.ignore_client_order,
+            mtu: self.optional.mtu,
+            session_storage: self.optional.session_storage,
+            ticketer: self.optional.ticketer,
+            cert_resolver: self.cert_resolver,
+            alpn_protocols: self.optional.alpn_protocols,
+            versions: self.optional.versions,
+            verifier: self.verifier,
+            key_log: self.optional.key_log,
+            #[cfg(feature = "quic")]
+            max_early_data_size: 0,
+        }
+    }
+
+    /// Set the MTU to `mtu`.
+    pub fn set_mtu(&mut self, mtu: Option<usize>) {
+        self.optional.mtu = mtu;
+    }
+
+    /// Set the supported protocol versions to `versions`.
+    pub fn set_versions(&mut self, versions: &[ProtocolVersion]) {
+        self.optional.versions = versions.to_vec();
+    }
+
+    /// Set the ALPN protocol list to the given protocol names.
+    /// Overwrites any existing configured protocols.
+    ///
+    /// The first element in the `protocols` list is the most
+    /// preferred, the last is the least preferred.
+    pub fn set_protocols(&mut self, protocols: &[Vec<u8>]) {
+        self.optional.alpn_protocols.clear();
+        self.optional
+            .alpn_protocols
+            .extend_from_slice(protocols);
+    }
+
+    /// Set the session persistence layer to `persist`.
+    pub fn set_persistence(&mut self, persist: Arc<dyn StoresServerSessions + Send + Sync>) {
+        self.optional.session_storage = persist;
+    }
+
+    /// Set the ticketer to `ticketer`.
+    pub fn set_ticketer(&mut self, ticketer: Arc<dyn ProducesTickets>) {
+        self.optional.ticketer = ticketer;
+    }
+
+    /// Set the KeyLog implementation to `key_log`.
+    pub fn set_key_log(&mut self, key_log: Arc<dyn KeyLog>) {
+        self.optional.key_log = key_log;
+    }
+}
+
 /// Common configuration for a set of server sessions.
 ///
 /// Making one of these can be expensive, and should be
@@ -214,7 +519,10 @@ impl ServerConfig {
     /// default, requiring client authentication, requires additional
     /// configuration that we cannot provide reasonable defaults for.
     pub fn new(client_cert_verifier: Arc<dyn verify::ClientCertVerifier>) -> ServerConfig {
-        ServerConfig::with_ciphersuites(client_cert_verifier, DEFAULT_CIPHERSUITES)
+        ServerConfigBuilder::defaults()
+            .with_client_cert_verifier(client_cert_verifier)
+            .with_cert_resolver(Arc::new(handy::FailResolveChain {}))
+            .build()
     }
 
     /// Make a `ServerConfig` with a custom set of ciphersuites,
@@ -234,21 +542,12 @@ impl ServerConfig {
         client_cert_verifier: Arc<dyn verify::ClientCertVerifier>,
         ciphersuites: &[&'static SupportedCipherSuite],
     ) -> ServerConfig {
-        ServerConfig {
-            ciphersuites: ciphersuites.to_vec(),
-            kx_groups: ALL_KX_GROUPS.to_vec(),
-            ignore_client_order: false,
-            mtu: None,
-            session_storage: handy::ServerSessionMemoryCache::new(256),
-            ticketer: Arc::new(handy::NeverProducesTickets {}),
-            alpn_protocols: Vec::new(),
-            cert_resolver: Arc::new(handy::FailResolveChain {}),
-            versions: vec![ProtocolVersion::TLSv1_3, ProtocolVersion::TLSv1_2],
-            verifier: client_cert_verifier,
-            key_log: Arc::new(NoKeyLog {}),
-            #[cfg(feature = "quic")]
-            max_early_data_size: 0,
-        }
+        ServerConfigBuilder::new()
+            .with_ciphersuites(ciphersuites)
+            .with_default_kx_groups()
+            .with_client_cert_verifier(client_cert_verifier)
+            .with_cert_resolver(Arc::new(handy::FailResolveChain {}))
+            .build()
     }
 
     #[doc(hidden)]

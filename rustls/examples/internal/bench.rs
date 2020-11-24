@@ -19,9 +19,9 @@ use rustls::Session;
 use rustls::Ticketer;
 use rustls::{AllowAnyAuthenticatedClient, NoClientAuth, RootCertStore};
 use rustls::{ClientConfig, ClientSession};
-use rustls::{ServerConfig, ServerSession};
-use rustls_pemfile;
+use rustls::{ServerConfig, ServerConfigBuilder, ServerSession};
 
+use rustls_pemfile;
 use webpki;
 
 fn duration_nanos(d: Duration) -> f64 {
@@ -284,24 +284,25 @@ fn make_server_config(
         ClientAuth::No => NoClientAuth::new(),
     };
 
-    let mut cfg = ServerConfig::new(client_auth);
-    cfg.set_single_cert(params.key_type.get_chain(), params.key_type.get_key())
+    let mut cfg = ServerConfigBuilder::new()
+        .with_default_ciphersuites()
+        .with_default_kx_groups()
+        .with_client_cert_verifier(client_auth)
+        .with_single_cert(params.key_type.get_chain(), params.key_type.get_key())
         .expect("bad certs/private key?");
 
     if resume == Resumption::SessionID {
         cfg.set_persistence(ServerSessionMemoryCache::new(128));
     } else if resume == Resumption::Tickets {
-        cfg.ticketer = Ticketer::new().unwrap();
+        cfg.set_ticketer(Ticketer::new().unwrap());
     } else {
         cfg.set_persistence(Arc::new(NoServerSessionStorage {}));
     }
 
-    cfg.versions.clear();
-    cfg.versions.push(params.version);
+    cfg.set_versions(&[params.version]);
+    cfg.set_mtu(mtu);
 
-    cfg.mtu = mtu;
-
-    cfg
+    cfg.build()
 }
 
 fn make_client_config(
