@@ -32,8 +32,6 @@ use webpki;
 use crate::server::common::{HandshakeDetails, ServerKXDetails};
 use crate::server::{tls12, tls13};
 
-use std::sync::Arc;
-
 pub type NextState = Box<dyn State + Send + Sync>;
 pub type NextStateOrError = Result<NextState, TlsError>;
 
@@ -425,7 +423,7 @@ impl ExpectClientHello {
         sess: &mut ServerSessionImpl,
         sigschemes: Vec<SignatureScheme>,
         skxg: &'static kx::SupportedKxGroup,
-        signing_key: &Arc<dyn sign::SigningKey>,
+        signing_key: &dyn sign::SigningKey,
         randoms: &SessionRandoms,
     ) -> Result<kx::KeyExchange, TlsError> {
         let kx = kx::KeyExchange::start(skxg)
@@ -914,7 +912,7 @@ impl State for ExpectClientHello {
         if let Some(ocsp_response) = ocsp_response {
             self.emit_cert_status(sess, ocsp_response);
         }
-        let kx = self.emit_server_kx(sess, sigschemes, group, &certkey.key, &randoms)?;
+        let kx = self.emit_server_kx(sess, sigschemes, group, &*certkey.key, &randoms)?;
         let doing_client_auth = self.emit_certificate_req(sess)?;
         self.emit_server_hello_done(sess);
 
