@@ -425,7 +425,7 @@ impl ExpectClientHello {
         sess: &mut ServerSessionImpl,
         sigschemes: Vec<SignatureScheme>,
         skxg: &'static kx::SupportedKxGroup,
-        signing_key: &Arc<Box<dyn sign::SigningKey>>,
+        signing_key: &Arc<dyn sign::SigningKey>,
         randoms: &SessionRandoms,
     ) -> Result<kx::KeyExchange, TlsError> {
         let kx = kx::KeyExchange::start(skxg)

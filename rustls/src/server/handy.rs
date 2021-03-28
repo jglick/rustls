@@ -113,10 +113,7 @@ impl AlwaysResolvesChain {
     ) -> Result<AlwaysResolvesChain, TlsError> {
         let key = sign::any_supported_type(priv_key)
             .map_err(|_| TlsError::General("invalid private key".into()))?;
-        Ok(AlwaysResolvesChain(sign::CertifiedKey::new(
-            chain,
-            Arc::new(key),
-        )))
+        Ok(AlwaysResolvesChain(sign::CertifiedKey::new(chain, key)))
     }
 
     /// Creates an `AlwaysResolvesChain`, auto-detecting the underlying private

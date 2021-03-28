@@ -1733,7 +1733,7 @@ fn sni_resolver_works() {
     let kt = KeyType::RSA;
     let mut resolver = rustls::ResolvesServerCertUsingSni::new();
     let signing_key = sign::RsaSigningKey::new(&kt.get_key()).unwrap();
-    let signing_key: Arc<Box<dyn sign::SigningKey>> = Arc::new(Box::new(signing_key));
+    let signing_key: Arc<dyn sign::SigningKey> = Arc::new(signing_key);
     resolver
         .add(
             "localhost",
@@ -1768,7 +1768,7 @@ fn sni_resolver_rejects_wrong_names() {
     let kt = KeyType::RSA;
     let mut resolver = rustls::ResolvesServerCertUsingSni::new();
     let signing_key = sign::RsaSigningKey::new(&kt.get_key()).unwrap();
-    let signing_key: Arc<Box<dyn sign::SigningKey>> = Arc::new(Box::new(signing_key));
+    let signing_key: Arc<dyn sign::SigningKey> = Arc::new(signing_key);
 
     assert_eq!(
         Ok(()),
@@ -1800,7 +1800,7 @@ fn sni_resolver_rejects_bad_certs() {
     let kt = KeyType::RSA;
     let mut resolver = rustls::ResolvesServerCertUsingSni::new();
     let signing_key = sign::RsaSigningKey::new(&kt.get_key()).unwrap();
-    let signing_key: Arc<Box<dyn sign::SigningKey>> = Arc::new(Box::new(signing_key));
+    let signing_key: Arc<dyn sign::SigningKey> = Arc::new(signing_key);
 
     assert_eq!(
         Err(TlsError::General(
