@@ -1,18 +1,14 @@
 use crate::error::TlsError;
-use crate::kx;
 #[cfg(feature = "logging")]
 use crate::log::{debug, trace};
 use crate::msgs::codec::Codec;
 use crate::msgs::enums::{AlertDescription, ExtensionType};
 use crate::msgs::enums::{CipherSuite, Compression, ECPointFormat};
-use crate::msgs::enums::{ClientCertificateType, SignatureScheme};
-use crate::msgs::enums::{ContentType, HandshakeType, ProtocolVersion};
+use crate::msgs::enums::{ClientCertificateType, ContentType, HandshakeType, ProtocolVersion};
 use crate::msgs::handshake::CertificateRequestPayload;
 use crate::msgs::handshake::{ClientExtension, HandshakeMessagePayload};
 use crate::msgs::handshake::{ClientHelloPayload, ServerExtension, SessionID};
 use crate::msgs::handshake::{ConvertProtocolNameList, ConvertServerNameList};
-use crate::msgs::handshake::{DigitallySignedStruct, ServerECDHParams};
-use crate::msgs::handshake::{ECDHEServerKeyExchange, ServerKeyExchangePayload};
 use crate::msgs::handshake::{ECPointFormatList, SupportedPointFormats};
 use crate::msgs::handshake::{HandshakePayload, SupportedSignatureSchemes};
 use crate::msgs::message::{Message, MessagePayload};
@@ -22,14 +18,11 @@ use crate::server::{ClientHello, ServerConfig, ServerSessionImpl};
 #[cfg(feature = "quic")]
 use crate::session::Protocol;
 use crate::session::{SessionRandoms, SessionSecrets};
-use crate::sign;
 use crate::suites;
 use webpki;
 
 use crate::server::common::{HandshakeDetails, ServerKXDetails};
 use crate::server::{tls12, tls13};
-
-use std::sync::Arc;
 
 pub type NextState = Box<dyn State + Send + Sync>;
 pub type NextStateOrError = Result<NextState, TlsError>;
@@ -335,50 +328,6 @@ impl ExpectClientHello {
         }
 
         ech
-    }
-
-    fn emit_server_kx(
-        &mut self,
-        sess: &mut ServerSessionImpl,
-        sigschemes: Vec<SignatureScheme>,
-        skxg: &'static kx::SupportedKxGroup,
-        signing_key: &Arc<Box<dyn sign::SigningKey>>,
-        randoms: &SessionRandoms,
-    ) -> Result<kx::KeyExchange, TlsError> {
-        let kx = kx::KeyExchange::start(skxg)
-            .ok_or_else(|| TlsError::PeerMisbehavedError("key exchange failed".to_string()))?;
-        let secdh = ServerECDHParams::new(skxg.name, kx.pubkey.as_ref());
-
-        let mut msg = Vec::new();
-        msg.extend(&randoms.client);
-        msg.extend(&randoms.server);
-        secdh.encode(&mut msg);
-
-        let signer = signing_key
-            .choose_scheme(&sigschemes)
-            .ok_or_else(|| TlsError::General("incompatible signing key".to_string()))?;
-        let sigscheme = signer.get_scheme();
-        let sig = signer.sign(&msg)?;
-
-        let skx = ServerKeyExchangePayload::ECDHE(ECDHEServerKeyExchange {
-            params: secdh,
-            dss: DigitallySignedStruct::new(sigscheme, sig),
-        });
-
-        let m = Message {
-            typ: ContentType::Handshake,
-            version: ProtocolVersion::TLSv1_2,
-            payload: MessagePayload::Handshake(HandshakeMessagePayload {
-                typ: HandshakeType::ServerKeyExchange,
-                payload: HandshakePayload::ServerKeyExchange(skx),
-            }),
-        };
-
-        self.handshake
-            .transcript
-            .add_message(&m);
-        sess.common.send_msg(m, false);
-        Ok(kx)
     }
 
     fn emit_certificate_req(&mut self, sess: &mut ServerSessionImpl) -> Result<bool, TlsError> {
@@ -835,7 +784,14 @@ impl State for ExpectClientHello {
         if let Some(ocsp_response) = ocsp_response {
             tls12::emit_cert_status(&mut self.handshake, sess, ocsp_response);
         }
-        let kx = self.emit_server_kx(sess, sigschemes, group, &certkey.key, &randoms)?;
+        let kx = tls12::emit_server_kx(
+            &mut self.handshake,
+            sess,
+            sigschemes,
+            group,
+            &certkey.key,
+            &randoms,
+        )?;
         let doing_client_auth = self.emit_certificate_req(sess)?;
         self.emit_server_hello_done(sess);
 
