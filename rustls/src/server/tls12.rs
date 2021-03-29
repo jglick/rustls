@@ -23,7 +23,7 @@ use crate::session::{SessionRandoms, SessionSecrets};
 use crate::sign;
 use crate::verify;
 
-use crate::server::common::{HandshakeDetails, ServerKXDetails};
+use crate::server::common::HandshakeDetails;
 use crate::server::hs;
 
 use ring::constant_time;
@@ -214,7 +214,7 @@ pub struct ExpectCertificate {
     pub handshake: HandshakeDetails,
     pub randoms: SessionRandoms,
     pub using_ems: bool,
-    pub server_kx: ServerKXDetails,
+    pub server_kx: kx::KeyExchange,
     pub send_ticket: bool,
 }
 
@@ -287,7 +287,7 @@ pub struct ExpectClientKX {
     pub handshake: HandshakeDetails,
     pub randoms: SessionRandoms,
     pub using_ems: bool,
-    pub server_kx: ServerKXDetails,
+    pub server_kx: kx::KeyExchange,
     pub client_cert: Option<Vec<Certificate>>,
     pub send_ticket: bool,
 }
@@ -311,7 +311,6 @@ impl hs::State for ExpectClientKX {
         // resulting premaster secret.
         let kxd = self
             .server_kx
-            .kx
             .server_complete(&client_kx.0)
             .ok_or_else(|| {
                 sess.common

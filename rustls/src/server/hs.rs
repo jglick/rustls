@@ -20,7 +20,7 @@ use crate::session::{SessionRandoms, SessionSecrets};
 use crate::suites;
 use webpki;
 
-use crate::server::common::{HandshakeDetails, ServerKXDetails};
+use crate::server::common::HandshakeDetails;
 use crate::server::{tls12, tls13};
 
 pub type NextState = Box<dyn State + Send + Sync>;
@@ -727,7 +727,7 @@ impl State for ExpectClientHello {
         if let Some(ocsp_response) = ocsp_response {
             tls12::emit_cert_status(&mut self.handshake, sess, ocsp_response);
         }
-        let kx = tls12::emit_server_kx(
+        let server_kx = tls12::emit_server_kx(
             &mut self.handshake,
             sess,
             sigschemes,
@@ -738,7 +738,6 @@ impl State for ExpectClientHello {
         let doing_client_auth = tls12::emit_certificate_req(&mut self.handshake, sess)?;
         tls12::emit_server_hello_done(&mut self.handshake, sess);
 
-        let server_kx = ServerKXDetails::new(kx);
         if doing_client_auth {
             Ok(Box::new(tls12::ExpectCertificate {
                 handshake: self.handshake,
