@@ -145,7 +145,7 @@ impl ExtensionProcessing {
         sct_list: &mut Option<&[u8]>,
         hello: &ClientHelloPayload,
         resumedata: Option<&persist::ServerSessionValue>,
-        handshake: &HandshakeDetails,
+        extra_exts: Vec<ServerExtension>,
     ) -> Result<(), TlsError> {
         // ALPN
         let our_protocols = &sess.config.alpn_protocols;
@@ -251,8 +251,7 @@ impl ExtensionProcessing {
             sct_list.take();
         }
 
-        self.exts
-            .extend(handshake.extra_exts.iter().cloned());
+        self.exts.extend(extra_exts);
 
         Ok(())
     }
@@ -300,6 +299,7 @@ impl ExtensionProcessing {
 
 pub struct ExpectClientHello {
     pub handshake: HandshakeDetails,
+    pub extra_exts: Vec<ServerExtension>,
     pub using_ems: bool,
     pub done_retry: bool,
     pub send_ticket: bool,
@@ -311,7 +311,8 @@ impl ExpectClientHello {
         extra_exts: Vec<ServerExtension>,
     ) -> ExpectClientHello {
         let mut ech = ExpectClientHello {
-            handshake: HandshakeDetails::new(extra_exts),
+            handshake: HandshakeDetails::new(),
+            extra_exts,
             using_ems: false,
             done_retry: false,
             send_ticket: false,
@@ -354,6 +355,7 @@ impl ExpectClientHello {
             client_hello,
             Some(&resumedata),
             randoms,
+            self.extra_exts,
         )?;
 
         let suite = sess.common.get_suite_assert();
@@ -576,6 +578,7 @@ impl State for ExpectClientHello {
                 randoms,
                 done_retry: self.done_retry,
                 send_ticket: self.send_ticket,
+                extra_exts: self.extra_exts,
             }
             .handle_client_hello(ciphersuite, sess, &certkey, &m);
         }
@@ -718,6 +721,7 @@ impl State for ExpectClientHello {
             client_hello,
             None,
             &randoms,
+            self.extra_exts,
         )?;
         tls12::emit_certificate(&mut self.handshake, sess, &certkey.cert);
         if let Some(ocsp_response) = ocsp_response {
