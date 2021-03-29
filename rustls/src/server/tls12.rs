@@ -7,11 +7,14 @@ use crate::log::{debug, trace};
 use crate::msgs::base::Payload;
 use crate::msgs::ccs::ChangeCipherSpecPayload;
 use crate::msgs::codec::Codec;
-use crate::msgs::enums::{AlertDescription, SignatureScheme};
+use crate::msgs::enums::{AlertDescription, ClientCertificateType, SignatureScheme};
 use crate::msgs::enums::{Compression, ContentType, HandshakeType, ProtocolVersion};
-use crate::msgs::handshake::{CertificateStatus, DigitallySignedStruct, ECDHEServerKeyExchange, HandshakePayload, ServerECDHParams, ServerKeyExchangePayload};
-use crate::msgs::handshake::{NewSessionTicketPayload, Random};
+use crate::msgs::handshake::{CertificateRequestPayload, CertificateStatus, DigitallySignedStruct};
 use crate::msgs::handshake::{ClientHelloPayload, HandshakeMessagePayload, ServerHelloPayload};
+use crate::msgs::handshake::{
+    ECDHEServerKeyExchange, HandshakePayload, ServerECDHParams, ServerKeyExchangePayload,
+};
+use crate::msgs::handshake::{NewSessionTicketPayload, Random};
 use crate::msgs::message::{Message, MessagePayload};
 use crate::msgs::persist;
 use crate::server::ServerSessionImpl;
@@ -80,7 +83,11 @@ pub(super) fn emit_certificate(
     sess.common.send_msg(c, false);
 }
 
-pub(super) fn emit_cert_status(handshake: &mut HandshakeDetails, sess: &mut ServerSessionImpl, ocsp: &[u8]) {
+pub(super) fn emit_cert_status(
+    handshake: &mut HandshakeDetails,
+    sess: &mut ServerSessionImpl,
+    ocsp: &[u8],
+) {
     let st = CertificateStatus::new(ocsp.to_owned());
 
     let c = Message {
@@ -136,6 +143,51 @@ pub(super) fn emit_server_kx(
     handshake.transcript.add_message(&m);
     sess.common.send_msg(m, false);
     Ok(kx)
+}
+
+pub(super) fn emit_certificate_req(
+    handshake: &mut HandshakeDetails,
+    sess: &mut ServerSessionImpl,
+) -> Result<bool, TlsError> {
+    let client_auth = sess.config.get_verifier();
+
+    if !client_auth.offer_client_auth() {
+        return Ok(false);
+    }
+
+    let verify_schemes = client_auth.supported_verify_schemes();
+
+    let names = client_auth
+        .client_auth_root_subjects(sess.get_sni())
+        .ok_or_else(|| {
+            debug!("could not determine root subjects based on SNI");
+            sess.common
+                .send_fatal_alert(AlertDescription::AccessDenied);
+            TlsError::General("client rejected by client_auth_root_subjects".into())
+        })?;
+
+    let cr = CertificateRequestPayload {
+        certtypes: vec![
+            ClientCertificateType::RSASign,
+            ClientCertificateType::ECDSASign,
+        ],
+        sigschemes: verify_schemes,
+        canames: names,
+    };
+
+    let m = Message {
+        typ: ContentType::Handshake,
+        version: ProtocolVersion::TLSv1_2,
+        payload: MessagePayload::Handshake(HandshakeMessagePayload {
+            typ: HandshakeType::CertificateRequest,
+            payload: HandshakePayload::CertificateRequest(cr),
+        }),
+    };
+
+    trace!("Sending CertificateRequest {:?}", m);
+    handshake.transcript.add_message(&m);
+    sess.common.send_msg(m, false);
+    Ok(true)
 }
 
 // --- Process client's Certificate for client auth ---
