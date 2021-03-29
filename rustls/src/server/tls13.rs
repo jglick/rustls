@@ -84,41 +84,6 @@ impl CompleteClientHelloHandling {
         constant_time::verify_slices_are_equal(real_binder.as_ref(), binder).is_ok()
     }
 
-    fn emit_encrypted_extensions(
-        &mut self,
-        sess: &mut ServerSessionImpl,
-        ocsp_response: &mut Option<&[u8]>,
-        sct_list: &mut Option<&[u8]>,
-        hello: &ClientHelloPayload,
-        resumedata: Option<&persist::ServerSessionValue>,
-    ) -> Result<(), TlsError> {
-        let mut ep = hs::ExtensionProcessing::new();
-        ep.process_common(
-            sess,
-            ocsp_response,
-            sct_list,
-            hello,
-            resumedata,
-            &self.handshake,
-        )?;
-
-        let ee = Message {
-            typ: ContentType::Handshake,
-            version: ProtocolVersion::TLSv1_3,
-            payload: MessagePayload::Handshake(HandshakeMessagePayload {
-                typ: HandshakeType::EncryptedExtensions,
-                payload: HandshakePayload::EncryptedExtensions(ep.exts),
-            }),
-        };
-
-        trace!("sending encrypted extensions {:?}", ee);
-        self.handshake
-            .transcript
-            .add_message(&ee);
-        sess.common.send_msg(ee, true);
-        Ok(())
-    }
-
     fn emit_certificate_req_tls13(
         &mut self,
         sess: &mut ServerSessionImpl,
@@ -510,7 +475,8 @@ impl CompleteClientHelloHandling {
 
         let (mut ocsp_response, mut sct_list) =
             (server_key.ocsp.as_deref(), server_key.sct_list.as_deref());
-        self.emit_encrypted_extensions(
+        emit_encrypted_extensions(
+            &mut self.handshake,
             sess,
             &mut ocsp_response,
             &mut sct_list,
@@ -699,6 +665,32 @@ fn emit_hello_retry_request(
     handshake.transcript.rollup_for_hrr();
     handshake.transcript.add_message(&m);
     sess.common.send_msg(m, false);
+}
+
+fn emit_encrypted_extensions(
+    handshake: &mut HandshakeDetails,
+    sess: &mut ServerSessionImpl,
+    ocsp_response: &mut Option<&[u8]>,
+    sct_list: &mut Option<&[u8]>,
+    hello: &ClientHelloPayload,
+    resumedata: Option<&persist::ServerSessionValue>,
+) -> Result<(), TlsError> {
+    let mut ep = hs::ExtensionProcessing::new();
+    ep.process_common(sess, ocsp_response, sct_list, hello, resumedata, &handshake)?;
+
+    let ee = Message {
+        typ: ContentType::Handshake,
+        version: ProtocolVersion::TLSv1_3,
+        payload: MessagePayload::Handshake(HandshakeMessagePayload {
+            typ: HandshakeType::EncryptedExtensions,
+            payload: HandshakePayload::EncryptedExtensions(ep.exts),
+        }),
+    };
+
+    trace!("sending encrypted extensions {:?}", ee);
+    handshake.transcript.add_message(&ee);
+    sess.common.send_msg(ee, true);
+    Ok(())
 }
 
 pub struct ExpectCertificate {
