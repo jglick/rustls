@@ -84,59 +84,6 @@ impl CompleteClientHelloHandling {
         constant_time::verify_slices_are_equal(real_binder.as_ref(), binder).is_ok()
     }
 
-    fn emit_certificate_req_tls13(
-        &mut self,
-        sess: &mut ServerSessionImpl,
-    ) -> Result<bool, TlsError> {
-        if !sess.config.verifier.offer_client_auth() {
-            return Ok(false);
-        }
-
-        let mut cr = CertificateRequestPayloadTLS13 {
-            context: PayloadU8::empty(),
-            extensions: Vec::new(),
-        };
-
-        let schemes = sess
-            .config
-            .get_verifier()
-            .supported_verify_schemes();
-        cr.extensions
-            .push(CertReqExtension::SignatureAlgorithms(schemes.to_vec()));
-
-        let names = sess
-            .config
-            .verifier
-            .client_auth_root_subjects(sess.get_sni())
-            .ok_or_else(|| {
-                debug!("could not determine root subjects based on SNI");
-                sess.common
-                    .send_fatal_alert(AlertDescription::AccessDenied);
-                TlsError::General("client rejected by client_auth_root_subjects".into())
-            })?;
-
-        if !names.is_empty() {
-            cr.extensions
-                .push(CertReqExtension::AuthorityNames(names));
-        }
-
-        let m = Message {
-            typ: ContentType::Handshake,
-            version: ProtocolVersion::TLSv1_3,
-            payload: MessagePayload::Handshake(HandshakeMessagePayload {
-                typ: HandshakeType::CertificateRequest,
-                payload: HandshakePayload::CertificateRequestTLS13(cr),
-            }),
-        };
-
-        trace!("Sending CertificateRequest {:?}", m);
-        self.handshake
-            .transcript
-            .add_message(&m);
-        sess.common.send_msg(m, true);
-        Ok(true)
-    }
-
     fn emit_certificate_tls13(
         &mut self,
         sess: &mut ServerSessionImpl,
@@ -485,7 +432,7 @@ impl CompleteClientHelloHandling {
         )?;
 
         let doing_client_auth = if full_handshake {
-            let client_auth = self.emit_certificate_req_tls13(sess)?;
+            let client_auth = emit_certificate_req_tls13(&mut self.handshake, sess)?;
             self.emit_certificate_tls13(sess, &server_key.cert, ocsp_response, sct_list);
             self.emit_certificate_verify_tls13(sess, &server_key.key, &sigschemes_ext)?;
             client_auth
@@ -693,6 +640,56 @@ fn emit_encrypted_extensions(
     Ok(())
 }
 
+fn emit_certificate_req_tls13(
+    handshake: &mut HandshakeDetails,
+    sess: &mut ServerSessionImpl,
+) -> Result<bool, TlsError> {
+    if !sess.config.verifier.offer_client_auth() {
+        return Ok(false);
+    }
+
+    let mut cr = CertificateRequestPayloadTLS13 {
+        context: PayloadU8::empty(),
+        extensions: Vec::new(),
+    };
+
+    let schemes = sess
+        .config
+        .get_verifier()
+        .supported_verify_schemes();
+    cr.extensions
+        .push(CertReqExtension::SignatureAlgorithms(schemes.to_vec()));
+
+    let names = sess
+        .config
+        .verifier
+        .client_auth_root_subjects(sess.get_sni())
+        .ok_or_else(|| {
+            debug!("could not determine root subjects based on SNI");
+            sess.common
+                .send_fatal_alert(AlertDescription::AccessDenied);
+            TlsError::General("client rejected by client_auth_root_subjects".into())
+        })?;
+
+    if !names.is_empty() {
+        cr.extensions
+            .push(CertReqExtension::AuthorityNames(names));
+    }
+
+    let m = Message {
+        typ: ContentType::Handshake,
+        version: ProtocolVersion::TLSv1_3,
+        payload: MessagePayload::Handshake(HandshakeMessagePayload {
+            typ: HandshakeType::CertificateRequest,
+            payload: HandshakePayload::CertificateRequestTLS13(cr),
+        }),
+    };
+
+    trace!("Sending CertificateRequest {:?}", m);
+    handshake.transcript.add_message(&m);
+    sess.common.send_msg(m, true);
+    Ok(true)
+}
 pub struct ExpectCertificate {
     pub handshake: HandshakeDetails,
     pub randoms: SessionRandoms,
