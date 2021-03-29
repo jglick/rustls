@@ -84,74 +84,6 @@ impl CompleteClientHelloHandling {
         constant_time::verify_slices_are_equal(real_binder.as_ref(), binder).is_ok()
     }
 
-    fn emit_finished_tls13(
-        &mut self,
-        sess: &mut ServerSessionImpl,
-        key_schedule: KeyScheduleHandshake,
-    ) -> KeyScheduleTrafficWithClientFinishedPending {
-        let handshake_hash = self
-            .handshake
-            .transcript
-            .get_current_hash();
-        let verify_data = key_schedule.sign_server_finish(&handshake_hash);
-        let verify_data_payload = Payload::new(verify_data.as_ref());
-
-        let m = Message {
-            typ: ContentType::Handshake,
-            version: ProtocolVersion::TLSv1_3,
-            payload: MessagePayload::Handshake(HandshakeMessagePayload {
-                typ: HandshakeType::Finished,
-                payload: HandshakePayload::Finished(verify_data_payload),
-            }),
-        };
-
-        trace!("sending finished {:?}", m);
-        self.handshake
-            .transcript
-            .add_message(&m);
-        let hash_at_server_fin = self
-            .handshake
-            .transcript
-            .get_current_hash();
-        self.handshake.hash_at_server_fin = Some(hash_at_server_fin);
-        sess.common.send_msg(m, true);
-
-        // Now move to application data keys.  Read key change is deferred until
-        // the Finish message is received & validated.
-        let mut key_schedule_traffic = key_schedule.into_traffic_with_client_finished_pending();
-        let suite = sess.common.get_suite_assert();
-        let write_key = key_schedule_traffic.server_application_traffic_secret(
-            &hash_at_server_fin,
-            &*sess.config.key_log,
-            &self.randoms.client,
-        );
-        sess.common
-            .record_layer
-            .set_message_encrypter(cipher::new_tls13_write(suite, &write_key));
-
-        key_schedule_traffic.exporter_master_secret(
-            &hash_at_server_fin,
-            &*sess.config.key_log,
-            &self.randoms.client,
-        );
-
-        let _read_key = key_schedule_traffic.client_application_traffic_secret(
-            &hash_at_server_fin,
-            &*sess.config.key_log,
-            &self.randoms.client,
-        );
-
-        #[cfg(feature = "quic")]
-        {
-            sess.common.quic.traffic_secrets = Some(quic::Secrets {
-                client: _read_key,
-                server: write_key,
-            });
-        }
-
-        key_schedule_traffic
-    }
-
     fn attempt_tls13_ticket_decryption(
         &mut self,
         sess: &mut ServerSessionImpl,
@@ -361,7 +293,8 @@ impl CompleteClientHelloHandling {
         };
 
         hs::check_aligned_handshake(sess)?;
-        let key_schedule_traffic = self.emit_finished_tls13(sess, key_schedule);
+        let key_schedule_traffic =
+            emit_finished_tls13(&mut self.handshake, &self.randoms, sess, key_schedule);
 
         if doing_client_auth {
             Ok(Box::new(ExpectCertificate {
@@ -692,6 +625,67 @@ fn emit_certificate_verify_tls13(
     handshake.transcript.add_message(&m);
     sess.common.send_msg(m, true);
     Ok(())
+}
+
+fn emit_finished_tls13(
+    handshake: &mut HandshakeDetails,
+    randoms: &SessionRandoms,
+    sess: &mut ServerSessionImpl,
+    key_schedule: KeyScheduleHandshake,
+) -> KeyScheduleTrafficWithClientFinishedPending {
+    let handshake_hash = handshake.transcript.get_current_hash();
+    let verify_data = key_schedule.sign_server_finish(&handshake_hash);
+    let verify_data_payload = Payload::new(verify_data.as_ref());
+
+    let m = Message {
+        typ: ContentType::Handshake,
+        version: ProtocolVersion::TLSv1_3,
+        payload: MessagePayload::Handshake(HandshakeMessagePayload {
+            typ: HandshakeType::Finished,
+            payload: HandshakePayload::Finished(verify_data_payload),
+        }),
+    };
+
+    trace!("sending finished {:?}", m);
+    handshake.transcript.add_message(&m);
+    let hash_at_server_fin = handshake.transcript.get_current_hash();
+    handshake.hash_at_server_fin = Some(hash_at_server_fin);
+    sess.common.send_msg(m, true);
+
+    // Now move to application data keys.  Read key change is deferred until
+    // the Finish message is received & validated.
+    let mut key_schedule_traffic = key_schedule.into_traffic_with_client_finished_pending();
+    let suite = sess.common.get_suite_assert();
+    let write_key = key_schedule_traffic.server_application_traffic_secret(
+        &hash_at_server_fin,
+        &*sess.config.key_log,
+        &randoms.client,
+    );
+    sess.common
+        .record_layer
+        .set_message_encrypter(cipher::new_tls13_write(suite, &write_key));
+
+    key_schedule_traffic.exporter_master_secret(
+        &hash_at_server_fin,
+        &*sess.config.key_log,
+        &randoms.client,
+    );
+
+    let _read_key = key_schedule_traffic.client_application_traffic_secret(
+        &hash_at_server_fin,
+        &*sess.config.key_log,
+        &randoms.client,
+    );
+
+    #[cfg(feature = "quic")]
+    {
+        sess.common.quic.traffic_secrets = Some(quic::Secrets {
+            client: _read_key,
+            server: write_key,
+        });
+    }
+
+    key_schedule_traffic
 }
 
 pub struct ExpectCertificate {
