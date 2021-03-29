@@ -8,7 +8,7 @@ use crate::msgs::enums::{CipherSuite, Compression, ECPointFormat};
 use crate::msgs::enums::{ClientCertificateType, SignatureScheme};
 use crate::msgs::enums::{ContentType, HandshakeType, ProtocolVersion};
 use crate::msgs::handshake::CertificateRequestPayload;
-use crate::msgs::handshake::{CertificateStatus, ClientExtension, HandshakeMessagePayload};
+use crate::msgs::handshake::{ClientExtension, HandshakeMessagePayload};
 use crate::msgs::handshake::{ClientHelloPayload, ServerExtension, SessionID};
 use crate::msgs::handshake::{ConvertProtocolNameList, ConvertServerNameList};
 use crate::msgs::handshake::{DigitallySignedStruct, ServerECDHParams};
@@ -335,24 +335,6 @@ impl ExpectClientHello {
         }
 
         ech
-    }
-
-    fn emit_cert_status(&mut self, sess: &mut ServerSessionImpl, ocsp: &[u8]) {
-        let st = CertificateStatus::new(ocsp.to_owned());
-
-        let c = Message {
-            typ: ContentType::Handshake,
-            version: ProtocolVersion::TLSv1_2,
-            payload: MessagePayload::Handshake(HandshakeMessagePayload {
-                typ: HandshakeType::CertificateStatus,
-                payload: HandshakePayload::CertificateStatus(st),
-            }),
-        };
-
-        self.handshake
-            .transcript
-            .add_message(&c);
-        sess.common.send_msg(c, false);
     }
 
     fn emit_server_kx(
@@ -851,7 +833,7 @@ impl State for ExpectClientHello {
         )?;
         tls12::emit_certificate(&mut self.handshake, sess, &certkey.cert);
         if let Some(ocsp_response) = ocsp_response {
-            self.emit_cert_status(sess, ocsp_response);
+            tls12::emit_cert_status(&mut self.handshake, sess, ocsp_response);
         }
         let kx = self.emit_server_kx(sess, sigschemes, group, &certkey.key, &randoms)?;
         let doing_client_auth = self.emit_certificate_req(sess)?;
