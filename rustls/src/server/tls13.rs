@@ -84,18 +84,6 @@ impl CompleteClientHelloHandling {
         constant_time::verify_slices_are_equal(real_binder.as_ref(), binder).is_ok()
     }
 
-    fn emit_fake_ccs(&mut self, sess: &mut ServerSessionImpl) {
-        if sess.common.is_quic() {
-            return;
-        }
-        let m = Message {
-            typ: ContentType::ChangeCipherSpec,
-            version: ProtocolVersion::TLSv1_2,
-            payload: MessagePayload::ChangeCipherSpec(ChangeCipherSpecPayload {}),
-        };
-        sess.common.send_msg(m, false);
-    }
-
     fn emit_hello_retry_request(
         &mut self,
         suite: &'static SupportedCipherSuite,
@@ -470,7 +458,7 @@ impl CompleteClientHelloHandling {
                     }
 
                     self.emit_hello_retry_request(suite, sess, group.name);
-                    self.emit_fake_ccs(sess);
+                    emit_fake_ccs(sess);
                     return Ok(Box::new(hs::ExpectClientHello {
                         handshake: self.handshake,
                         using_ems: false,
@@ -556,7 +544,7 @@ impl CompleteClientHelloHandling {
                 .map(|x| &x.master_secret.0[..]),
         )?;
         if !self.done_retry {
-            self.emit_fake_ccs(sess);
+            emit_fake_ccs(sess);
         }
 
         let (mut ocsp_response, mut sct_list) =
@@ -703,6 +691,18 @@ fn emit_server_hello(
     }
 
     Ok(key_schedule)
+}
+
+fn emit_fake_ccs(sess: &mut ServerSessionImpl) {
+    if sess.common.is_quic() {
+        return;
+    }
+    let m = Message {
+        typ: ContentType::ChangeCipherSpec,
+        version: ProtocolVersion::TLSv1_2,
+        payload: MessagePayload::ChangeCipherSpec(ChangeCipherSpecPayload {}),
+    };
+    sess.common.send_msg(m, false);
 }
 
 pub struct ExpectCertificate {
