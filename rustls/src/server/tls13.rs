@@ -48,6 +48,7 @@ use crate::server::common::{ClientCertDetails, HandshakeDetails};
 use crate::server::hs;
 
 use ring::constant_time;
+use ring::digest::Digest;
 
 use std::sync::Arc;
 
@@ -296,7 +297,7 @@ impl CompleteClientHelloHandling {
         };
 
         hs::check_aligned_handshake(sess)?;
-        let key_schedule_traffic =
+        let (key_schedule_traffic, hash_at_server_fin) =
             emit_finished_tls13(&mut self.handshake, &self.randoms, sess, key_schedule);
 
         if doing_client_auth {
@@ -305,6 +306,7 @@ impl CompleteClientHelloHandling {
                 randoms: self.randoms,
                 key_schedule: key_schedule_traffic,
                 send_ticket: self.send_ticket,
+                hash_at_server_fin,
             }))
         } else {
             Ok(Box::new(ExpectFinished {
@@ -312,6 +314,7 @@ impl CompleteClientHelloHandling {
                 randoms: self.randoms,
                 key_schedule: key_schedule_traffic,
                 send_ticket: self.send_ticket,
+                hash_at_server_fin,
             }))
         }
     }
@@ -636,7 +639,7 @@ fn emit_finished_tls13(
     randoms: &SessionRandoms,
     sess: &mut ServerSessionImpl,
     key_schedule: KeyScheduleHandshake,
-) -> KeyScheduleTrafficWithClientFinishedPending {
+) -> (KeyScheduleTrafficWithClientFinishedPending, Digest) {
     let handshake_hash = handshake.transcript.get_current_hash();
     let verify_data = key_schedule.sign_server_finish(&handshake_hash);
     let verify_data_payload = Payload::new(verify_data.as_ref());
@@ -653,7 +656,6 @@ fn emit_finished_tls13(
     trace!("sending finished {:?}", m);
     handshake.transcript.add_message(&m);
     let hash_at_server_fin = handshake.transcript.get_current_hash();
-    handshake.hash_at_server_fin = Some(hash_at_server_fin);
     sess.common.send_msg(m, true);
 
     // Now move to application data keys.  Read key change is deferred until
@@ -689,7 +691,7 @@ fn emit_finished_tls13(
         });
     }
 
-    key_schedule_traffic
+    (key_schedule_traffic, hash_at_server_fin)
 }
 
 pub struct ExpectCertificate {
@@ -697,6 +699,7 @@ pub struct ExpectCertificate {
     pub randoms: SessionRandoms,
     pub key_schedule: KeyScheduleTrafficWithClientFinishedPending,
     pub send_ticket: bool,
+    pub hash_at_server_fin: Digest,
 }
 
 impl hs::State for ExpectCertificate {
@@ -747,6 +750,7 @@ impl hs::State for ExpectCertificate {
                         randoms: self.randoms,
                         handshake: self.handshake,
                         send_ticket: self.send_ticket,
+                        hash_at_server_fin: self.hash_at_server_fin,
                     }));
                 }
 
@@ -773,6 +777,7 @@ impl hs::State for ExpectCertificate {
             key_schedule: self.key_schedule,
             client_cert,
             send_ticket: self.send_ticket,
+            hash_at_server_fin: self.hash_at_server_fin,
         }))
     }
 }
@@ -783,6 +788,7 @@ pub struct ExpectCertificateVerify {
     key_schedule: KeyScheduleTrafficWithClientFinishedPending,
     client_cert: ClientCertDetails,
     send_ticket: bool,
+    hash_at_server_fin: Digest,
 }
 
 impl hs::State for ExpectCertificateVerify {
@@ -829,6 +835,7 @@ impl hs::State for ExpectCertificateVerify {
             handshake: self.handshake,
             randoms: self.randoms,
             send_ticket: self.send_ticket,
+            hash_at_server_fin: self.hash_at_server_fin,
         }))
     }
 }
@@ -863,6 +870,7 @@ pub struct ExpectFinished {
     pub randoms: SessionRandoms,
     pub key_schedule: KeyScheduleTrafficWithClientFinishedPending,
     pub send_ticket: bool,
+    pub hash_at_server_fin: Digest,
 }
 
 impl ExpectFinished {
@@ -964,10 +972,7 @@ impl hs::State for ExpectFinished {
         let read_key = self
             .key_schedule
             .client_application_traffic_secret(
-                self.handshake
-                    .hash_at_server_fin
-                    .as_ref()
-                    .unwrap(),
+                &self.hash_at_server_fin,
                 &*sess.config.key_log,
                 &self.randoms.client,
             );
