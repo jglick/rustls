@@ -23,7 +23,7 @@ use crate::session::{SessionRandoms, SessionSecrets};
 use crate::sign;
 use crate::verify;
 
-use crate::server::common::{ClientCertDetails, HandshakeDetails, ServerKXDetails};
+use crate::server::common::{HandshakeDetails, ServerKXDetails};
 use crate::server::hs;
 
 use ring::constant_time;
@@ -267,7 +267,7 @@ impl hs::State for ExpectCertificate {
                         Err(err)
                     })?;
 
-                Some(ClientCertDetails::new(cert_chain.clone()))
+                Some(cert_chain.clone())
             }
         };
 
@@ -288,7 +288,7 @@ pub struct ExpectClientKX {
     pub randoms: SessionRandoms,
     pub using_ems: bool,
     pub server_kx: ServerKXDetails,
-    pub client_cert: Option<ClientCertDetails>,
+    pub client_cert: Option<Vec<Certificate>>,
     pub send_ticket: bool,
 }
 
@@ -362,7 +362,7 @@ pub struct ExpectCertificateVerify {
     secrets: SessionSecrets,
     handshake: HandshakeDetails,
     using_ems: bool,
-    client_cert: ClientCertDetails,
+    client_cert: Vec<Certificate>,
     send_ticket: bool,
 }
 
@@ -382,7 +382,7 @@ impl hs::State for ExpectCertificateVerify {
                 .handshake
                 .transcript
                 .take_handshake_buf();
-            let certs = &self.client_cert.cert_chain;
+            let certs = &self.client_cert;
 
             sess.config
                 .get_verifier()
@@ -396,7 +396,7 @@ impl hs::State for ExpectCertificateVerify {
         }
 
         trace!("client CertificateVerify OK");
-        sess.client_cert_chain = Some(self.client_cert.cert_chain);
+        sess.client_cert_chain = Some(self.client_cert);
 
         self.handshake
             .transcript
