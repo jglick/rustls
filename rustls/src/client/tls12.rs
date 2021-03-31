@@ -81,6 +81,10 @@ impl hs::State for ExpectCertificate {
             }))
         }
     }
+
+    fn suite(&self) -> Option<&'static SupportedCipherSuite> {
+        Some(self.suite)
+    }
 }
 
 struct ExpectCertificateStatus {
@@ -128,6 +132,10 @@ impl hs::State for ExpectCertificateStatus {
             server_cert,
             must_issue_new_ticket: self.must_issue_new_ticket,
         }))
+    }
+
+    fn suite(&self) -> Option<&'static SupportedCipherSuite> {
+        Some(self.suite)
     }
 }
 
@@ -188,6 +196,10 @@ impl hs::State for ExpectCertificateStatusOrServerKX {
             .handle(sess, m)
         }
     }
+
+    fn suite(&self) -> Option<&'static SupportedCipherSuite> {
+        Some(self.suite)
+    }
 }
 
 struct ExpectServerKX {
@@ -243,6 +255,10 @@ impl hs::State for ExpectServerKX {
             server_kx,
             must_issue_new_ticket: self.must_issue_new_ticket,
         }))
+    }
+
+    fn suite(&self) -> Option<&'static SupportedCipherSuite> {
+        Some(self.suite)
     }
 }
 
@@ -426,6 +442,10 @@ impl hs::State for ExpectCertificateRequest {
             must_issue_new_ticket: self.must_issue_new_ticket,
         }))
     }
+
+    fn suite(&self) -> Option<&'static SupportedCipherSuite> {
+        Some(self.suite)
+    }
 }
 
 struct ExpectServerDoneOrCertReq {
@@ -481,6 +501,10 @@ impl hs::State for ExpectServerDoneOrCertReq {
             })
             .handle(sess, m)
         }
+    }
+
+    fn suite(&self) -> Option<&'static SupportedCipherSuite> {
+        Some(self.suite)
     }
 }
 
@@ -643,6 +667,10 @@ impl hs::State for ExpectServerDone {
             }))
         }
     }
+
+    fn suite(&self) -> Option<&'static SupportedCipherSuite> {
+        Some(self.suite)
+    }
 }
 
 // -- Waiting for their CCS --
@@ -684,6 +712,10 @@ impl hs::State for ExpectCCS {
             sig_verified: self.sig_verified,
         }))
     }
+
+    fn suite(&self) -> Option<&'static SupportedCipherSuite> {
+        Some(self.secrets.suite())
+    }
 }
 
 pub struct ExpectNewTicket {
@@ -720,6 +752,10 @@ impl hs::State for ExpectNewTicket {
             cert_verified: self.cert_verified,
             sig_verified: self.sig_verified,
         }))
+    }
+
+    fn suite(&self) -> Option<&'static SupportedCipherSuite> {
+        Some(self.secrets.suite())
     }
 }
 
@@ -841,6 +877,10 @@ impl hs::State for ExpectFinished {
             _fin_verified,
         }))
     }
+
+    fn suite(&self) -> Option<&'static SupportedCipherSuite> {
+        Some(self.secrets.suite())
+    }
 }
 
 // -- Traffic transit state --
@@ -868,5 +908,9 @@ impl hs::State for ExpectTraffic {
         self.secrets
             .export_keying_material(output, label, context);
         Ok(())
+    }
+
+    fn suite(&self) -> Option<&'static SupportedCipherSuite> {
+        Some(self.secrets.suite())
     }
 }

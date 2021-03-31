@@ -488,7 +488,7 @@ impl ServerSessionImpl {
     }
 
     pub fn get_negotiated_ciphersuite(&self) -> Option<&'static SupportedCipherSuite> {
-        self.common.get_suite()
+        self.state.as_ref().unwrap().suite()
     }
 
     pub fn get_sni(&self) -> Option<&webpki::DNSName> {

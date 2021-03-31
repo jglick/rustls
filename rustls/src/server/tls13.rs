@@ -53,6 +53,7 @@ use std::sync::Arc;
 
 pub struct CompleteClientHelloHandling {
     pub handshake: HandshakeDetails,
+    pub suite: &'static SupportedCipherSuite,
     pub randoms: SessionRandoms,
     pub done_retry: bool,
     pub send_ticket: bool,
@@ -258,6 +259,7 @@ impl CompleteClientHelloHandling {
         let mut ep = hs::ExtensionProcessing::new();
         ep.process_common(
             sess,
+            self.suite,
             ocsp_response,
             sct_list,
             hello,
@@ -461,7 +463,6 @@ impl CompleteClientHelloHandling {
         // Now move to application data keys.  Read key change is deferred until
         // the Finish message is received & validated.
         let mut key_schedule_traffic = key_schedule.into_traffic_with_client_finished_pending();
-        let suite = sess.common.get_suite_assert();
         let write_key = key_schedule_traffic.server_application_traffic_secret(
             &hash_at_server_fin,
             &*sess.config.key_log,
@@ -469,7 +470,7 @@ impl CompleteClientHelloHandling {
         );
         sess.common
             .record_layer
-            .set_message_encrypter(cipher::new_tls13_write(suite, &write_key));
+            .set_message_encrypter(cipher::new_tls13_write(self.suite, &write_key));
 
         key_schedule_traffic.exporter_master_secret(
             &hash_at_server_fin,
@@ -616,7 +617,7 @@ impl CompleteClientHelloHandling {
             for (i, psk_id) in psk_offer.identities.iter().enumerate() {
                 let resume = match self
                     .attempt_tls13_ticket_decryption(sess, &psk_id.identity.0)
-                    .and_then(|resumedata| hs::can_resume(sess, false, resumedata))
+                    .and_then(|resumedata| hs::can_resume(self.suite, &sess.sni, false, resumedata))
                 {
                     Some(resume) => resume,
                     None => continue,
@@ -694,6 +695,7 @@ impl CompleteClientHelloHandling {
         if doing_client_auth {
             Ok(Box::new(ExpectCertificate {
                 handshake: self.handshake,
+                suite: self.suite,
                 randoms: self.randoms,
                 key_schedule: key_schedule_traffic,
                 send_ticket: self.send_ticket,
@@ -701,6 +703,7 @@ impl CompleteClientHelloHandling {
         } else {
             Ok(Box::new(ExpectFinished {
                 handshake: self.handshake,
+                suite: self.suite,
                 randoms: self.randoms,
                 key_schedule: key_schedule_traffic,
                 send_ticket: self.send_ticket,
@@ -711,6 +714,7 @@ impl CompleteClientHelloHandling {
 
 pub struct ExpectCertificate {
     pub handshake: HandshakeDetails,
+    pub suite: &'static SupportedCipherSuite,
     pub randoms: SessionRandoms,
     pub key_schedule: KeyScheduleTrafficWithClientFinishedPending,
     pub send_ticket: bool,
@@ -760,6 +764,7 @@ impl hs::State for ExpectCertificate {
                         .transcript
                         .abandon_client_auth();
                     return Ok(Box::new(ExpectFinished {
+                        suite: self.suite,
                         key_schedule: self.key_schedule,
                         randoms: self.randoms,
                         handshake: self.handshake,
@@ -785,6 +790,7 @@ impl hs::State for ExpectCertificate {
 
         let client_cert = ClientCertDetails::new(cert_chain);
         Ok(Box::new(ExpectCertificateVerify {
+            suite: self.suite,
             handshake: self.handshake,
             randoms: self.randoms,
             key_schedule: self.key_schedule,
@@ -792,10 +798,15 @@ impl hs::State for ExpectCertificate {
             send_ticket: self.send_ticket,
         }))
     }
+
+    fn suite(&self) -> Option<&'static SupportedCipherSuite> {
+        Some(self.suite)
+    }
 }
 
 pub struct ExpectCertificateVerify {
     handshake: HandshakeDetails,
+    suite: &'static SupportedCipherSuite,
     randoms: SessionRandoms,
     key_schedule: KeyScheduleTrafficWithClientFinishedPending,
     client_cert: ClientCertDetails,
@@ -842,22 +853,27 @@ impl hs::State for ExpectCertificateVerify {
             .transcript
             .add_message(&m);
         Ok(Box::new(ExpectFinished {
+            suite: self.suite,
             key_schedule: self.key_schedule,
             handshake: self.handshake,
             randoms: self.randoms,
             send_ticket: self.send_ticket,
         }))
     }
+
+    fn suite(&self) -> Option<&'static SupportedCipherSuite> {
+        Some(self.suite)
+    }
 }
 
 // --- Process client's Finished ---
 fn get_server_session_value(
     handshake: &mut HandshakeDetails,
+    suite: &'static SupportedCipherSuite,
     key_schedule: &KeyScheduleTraffic,
     sess: &ServerSessionImpl,
     nonce: &[u8],
 ) -> persist::ServerSessionValue {
-    let scs = sess.common.get_suite_assert();
     let version = ProtocolVersion::TLSv1_3;
 
     let handshake_hash = handshake.transcript.get_current_hash();
@@ -867,7 +883,7 @@ fn get_server_session_value(
     persist::ServerSessionValue::new(
         sess.get_sni(),
         version,
-        scs.suite,
+        suite.suite,
         secret,
         &sess.client_cert_chain,
         sess.common.alpn_protocol.clone(),
@@ -877,6 +893,7 @@ fn get_server_session_value(
 
 pub struct ExpectFinished {
     pub handshake: HandshakeDetails,
+    pub suite: &'static SupportedCipherSuite,
     pub randoms: SessionRandoms,
     pub key_schedule: KeyScheduleTrafficWithClientFinishedPending,
     pub send_ticket: bool,
@@ -885,11 +902,13 @@ pub struct ExpectFinished {
 impl ExpectFinished {
     fn emit_ticket(
         handshake: &mut HandshakeDetails,
+        suite: &'static SupportedCipherSuite,
         sess: &mut ServerSessionImpl,
         key_schedule: &KeyScheduleTraffic,
     ) -> Result<(), rand::GetRandomFailed> {
         let nonce = rand::random_vec(32)?;
-        let plain = get_server_session_value(handshake, key_schedule, sess, &nonce).get_encoding();
+        let plain =
+            get_server_session_value(handshake, suite, key_schedule, sess, &nonce).get_encoding();
 
         let stateless = sess.config.ticketer.enabled();
         let (ticket, lifetime) = if stateless {
@@ -975,8 +994,6 @@ impl hs::State for ExpectFinished {
 
         hs::check_aligned_handshake(sess)?;
 
-        let suite = sess.common.get_suite_assert();
-
         // Install keying to read future messages.
         let read_key = self
             .key_schedule
@@ -990,12 +1007,12 @@ impl hs::State for ExpectFinished {
             );
         sess.common
             .record_layer
-            .set_message_decrypter(cipher::new_tls13_read(suite, &read_key));
+            .set_message_decrypter(cipher::new_tls13_read(self.suite, &read_key));
 
         let key_schedule_traffic = self.key_schedule.into_traffic();
 
         if self.send_ticket {
-            Self::emit_ticket(&mut self.handshake, sess, &key_schedule_traffic)?;
+            Self::emit_ticket(&mut self.handshake, self.suite, sess, &key_schedule_traffic)?;
         }
 
         sess.common.start_traffic();
@@ -1004,6 +1021,7 @@ impl hs::State for ExpectFinished {
         {
             if sess.common.protocol == Protocol::Quic {
                 return Ok(Box::new(ExpectQUICTraffic {
+                    suite: self.suite,
                     key_schedule: key_schedule_traffic,
                     _fin_verified: fin,
                 }));
@@ -1011,15 +1029,21 @@ impl hs::State for ExpectFinished {
         }
 
         Ok(Box::new(ExpectTraffic {
+            suite: self.suite,
             key_schedule: key_schedule_traffic,
             want_write_key_update: false,
             _fin_verified: fin,
         }))
     }
+
+    fn suite(&self) -> Option<&'static SupportedCipherSuite> {
+        Some(self.suite)
+    }
 }
 
 // --- Process traffic ---
 pub struct ExpectTraffic {
+    suite: &'static SupportedCipherSuite,
     key_schedule: KeyScheduleTraffic,
     want_write_key_update: bool,
     _fin_verified: verify::FinishedMessageVerified,
@@ -1066,10 +1090,9 @@ impl ExpectTraffic {
         let new_read_key = self
             .key_schedule
             .next_client_application_traffic_secret();
-        let suite = sess.common.get_suite_assert();
         sess.common
             .record_layer
-            .set_message_decrypter(cipher::new_tls13_read(suite, &new_read_key));
+            .set_message_decrypter(cipher::new_tls13_read(self.suite, &new_read_key));
 
         Ok(())
     }
@@ -1117,16 +1140,20 @@ impl hs::State for ExpectTraffic {
             let write_key = self
                 .key_schedule
                 .next_server_application_traffic_secret();
-            let scs = sess.common.get_suite_assert();
             sess.common
                 .record_layer
-                .set_message_encrypter(cipher::new_tls13_write(scs, &write_key));
+                .set_message_encrypter(cipher::new_tls13_write(self.suite, &write_key));
         }
+    }
+
+    fn suite(&self) -> Option<&'static SupportedCipherSuite> {
+        Some(self.suite)
     }
 }
 
 #[cfg(feature = "quic")]
 pub struct ExpectQUICTraffic {
+    suite: &'static SupportedCipherSuite,
     key_schedule: KeyScheduleTraffic,
     _fin_verified: verify::FinishedMessageVerified,
 }
@@ -1147,5 +1174,9 @@ impl hs::State for ExpectQUICTraffic {
     ) -> Result<(), TlsError> {
         self.key_schedule
             .export_keying_material(output, label, context)
+    }
+
+    fn suite(&self) -> Option<&'static SupportedCipherSuite> {
+        Some(self.suite)
     }
 }

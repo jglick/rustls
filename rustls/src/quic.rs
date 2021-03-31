@@ -8,6 +8,7 @@ use crate::msgs::message::{Message, MessagePayload};
 use crate::server::{ServerConfig, ServerSession, ServerSessionImpl};
 use crate::session::{Protocol, SessionCommon};
 use crate::suites::{BulkAlgorithm, SupportedCipherSuite, TLS13_AES_128_GCM_SHA256};
+use crate::Session;
 
 use std::sync::Arc;
 
@@ -84,7 +85,8 @@ impl QuicExt for ClientSession {
     }
 
     fn write_hs(&mut self, buf: &mut Vec<u8>) -> Option<Keys> {
-        write_hs(&mut self.common, buf)
+        let suite = self.get_negotiated_ciphersuite();
+        write_hs(&mut self.common, buf, suite)
     }
 
     fn get_alert(&self) -> Option<AlertDescription> {
@@ -92,7 +94,8 @@ impl QuicExt for ClientSession {
     }
 
     fn next_1rtt_keys(&mut self) -> Option<PacketKeySet> {
-        next_1rtt_keys(&mut self.common)
+        let suite = self.get_negotiated_ciphersuite()?;
+        next_1rtt_keys(&mut self.common, suite)
     }
 }
 
@@ -108,7 +111,7 @@ impl QuicExt for ServerSession {
 
     fn get_0rtt_keys(&self) -> Option<DirectionalKeys> {
         Some(DirectionalKeys::new(
-            self.imp.common.get_suite()?,
+            self.imp.get_negotiated_ciphersuite()?,
             self.imp
                 .common
                 .quic
@@ -123,7 +126,8 @@ impl QuicExt for ServerSession {
             .process_new_handshake_messages()
     }
     fn write_hs(&mut self, buf: &mut Vec<u8>) -> Option<Keys> {
-        write_hs(&mut self.imp.common, buf)
+        let suite = self.get_negotiated_ciphersuite();
+        write_hs(&mut self.imp.common, buf, suite)
     }
 
     fn get_alert(&self) -> Option<AlertDescription> {
@@ -131,7 +135,8 @@ impl QuicExt for ServerSession {
     }
 
     fn next_1rtt_keys(&mut self) -> Option<PacketKeySet> {
-        next_1rtt_keys(&mut self.imp.common)
+        let suite = self.get_negotiated_ciphersuite()?;
+        next_1rtt_keys(&mut self.imp.common, suite)
     }
 }
 
@@ -270,7 +275,11 @@ fn read_hs(this: &mut SessionCommon, plaintext: &[u8]) -> Result<(), TlsError> {
     Ok(())
 }
 
-fn write_hs(this: &mut SessionCommon, buf: &mut Vec<u8>) -> Option<Keys> {
+fn write_hs(
+    this: &mut SessionCommon,
+    buf: &mut Vec<u8>,
+    suite: Option<&'static SupportedCipherSuite>,
+) -> Option<Keys> {
     while let Some((_, msg)) = this.quic.hs_queue.pop_front() {
         buf.extend_from_slice(&msg);
         if let Some(&(true, _)) = this.quic.hs_queue.front() {
@@ -281,7 +290,7 @@ fn write_hs(this: &mut SessionCommon, buf: &mut Vec<u8>) -> Option<Keys> {
         }
     }
 
-    let suite = this.get_suite()?;
+    let suite = suite?;
     if let Some(secrets) = this.quic.hs_secrets.take() {
         return Some(Keys::new(suite, this.is_client, &secrets));
     }
@@ -296,8 +305,10 @@ fn write_hs(this: &mut SessionCommon, buf: &mut Vec<u8>) -> Option<Keys> {
     None
 }
 
-fn next_1rtt_keys(this: &mut SessionCommon) -> Option<PacketKeySet> {
-    let suite = this.get_suite()?;
+fn next_1rtt_keys(
+    this: &mut SessionCommon,
+    suite: &'static SupportedCipherSuite,
+) -> Option<PacketKeySet> {
     let secrets = this.quic.traffic_secrets.as_ref()?;
     let next = next_1rtt_secrets(suite.hkdf_algorithm, secrets);
 

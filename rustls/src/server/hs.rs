@@ -27,6 +27,8 @@ use crate::session::Protocol;
 use crate::session::{SessionRandoms, SessionSecrets};
 use crate::sign;
 use crate::suites;
+use crate::SupportedCipherSuite;
+
 use webpki;
 
 use crate::server::common::{HandshakeDetails, ServerKXDetails};
@@ -50,6 +52,10 @@ pub trait State {
     }
 
     fn perhaps_write_key_update(&mut self, _sess: &mut ServerSessionImpl) {}
+
+    fn suite(&self) -> Option<&'static SupportedCipherSuite> {
+        None
+    }
 }
 
 pub fn incompatible(sess: &mut ServerSessionImpl, why: &str) -> TlsError {
@@ -77,7 +83,8 @@ pub fn decode_error(sess: &mut ServerSessionImpl, why: &str) -> TlsError {
 }
 
 pub fn can_resume(
-    sess: &ServerSessionImpl,
+    suite: &'static SupportedCipherSuite,
+    sni: &Option<webpki::DNSName>,
     using_ems: bool,
     resumedata: persist::ServerSessionValue,
 ) -> Option<persist::ServerSessionValue> {
@@ -89,9 +96,9 @@ pub fn can_resume(
     // a different name. Instead, it proceeds with a full handshake to
     // establish a new session."
 
-    if resumedata.cipher_suite == sess.common.get_suite_assert().suite
+    if resumedata.cipher_suite == suite.suite
         && (resumedata.extended_ms == using_ems || (resumedata.extended_ms && !using_ems))
-        && same_dns_name_or_both_none(resumedata.sni.as_ref(), sess.sni.as_ref())
+        && same_dns_name_or_both_none(resumedata.sni.as_ref(), sni.as_ref())
     {
         return Some(resumedata);
     }
@@ -152,6 +159,8 @@ impl ExtensionProcessing {
     pub fn process_common(
         &mut self,
         sess: &mut ServerSessionImpl,
+        #[allow(unused_variables)] // #[cfg(feature = "quic")] only
+        suite: &'static SupportedCipherSuite,
         ocsp_response: &mut Option<&[u8]>,
         sct_list: &mut Option<&[u8]>,
         hello: &ClientHelloPayload,
@@ -205,7 +214,7 @@ impl ExtensionProcessing {
                     if sess.config.max_early_data_size > 0
                         && hello.early_data_extension_offered()
                         && resume.version == sess.common.negotiated_version.unwrap()
-                        && resume.cipher_suite == sess.common.get_suite_assert().suite
+                        && resume.cipher_suite == suite.suite
                         && resume.alpn.as_ref().map(|x| &x.0) == sess.common.alpn_protocol.as_ref()
                         && !sess.reject_early_data
                     {
@@ -343,6 +352,7 @@ impl ExpectClientHello {
     fn emit_server_hello(
         &mut self,
         sess: &mut ServerSessionImpl,
+        suite: &'static SupportedCipherSuite,
         ocsp_response: &mut Option<&[u8]>,
         sct_list: &mut Option<&[u8]>,
         hello: &ClientHelloPayload,
@@ -352,6 +362,7 @@ impl ExpectClientHello {
         let mut ep = ExtensionProcessing::new();
         ep.process_common(
             sess,
+            suite,
             ocsp_response,
             sct_list,
             hello,
@@ -371,7 +382,7 @@ impl ExpectClientHello {
                     legacy_version: ProtocolVersion::TLSv1_2,
                     random: Random::from_slice(&randoms.server),
                     session_id: self.handshake.session_id,
-                    cipher_suite: sess.common.get_suite_assert().suite,
+                    cipher_suite: suite.suite,
                     compression_method: Compression::Null,
                     extensions: ep.exts,
                 }),
@@ -528,6 +539,7 @@ impl ExpectClientHello {
         mut self,
         sess: &mut ServerSessionImpl,
         client_hello: &ClientHelloPayload,
+        suite: &'static SupportedCipherSuite,
         sni: Option<&webpki::DNSName>,
         id: &SessionID,
         resumedata: persist::ServerSessionValue,
@@ -542,6 +554,7 @@ impl ExpectClientHello {
         self.handshake.session_id = *id;
         self.emit_server_hello(
             sess,
+            suite,
             &mut None,
             &mut None,
             client_hello,
@@ -549,7 +562,6 @@ impl ExpectClientHello {
             randoms,
         )?;
 
-        let suite = sess.common.get_suite_assert();
         let secrets = SessionSecrets::new_resume(&randoms, suite, &resumedata.master_secret.0);
         sess.config.key_log.log(
             "CLIENT_RANDOM",
@@ -724,7 +736,7 @@ impl State for ExpectClientHello {
         // And version
         let suitable_suites = suites::reduce_given_version(&suitable_suites, version);
 
-        let ciphersuite = if sess.config.ignore_client_order {
+        let suite = if sess.config.ignore_client_order {
             suites::choose_ciphersuite_preferring_server(
                 &client_hello.cipher_suites,
                 &suitable_suites,
@@ -737,14 +749,10 @@ impl State for ExpectClientHello {
         }
         .ok_or_else(|| incompatible(sess, "no ciphersuites in common"))?;
 
-        debug!("decided upon suite {:?}", ciphersuite);
-        sess.common.suite = Some(ciphersuite);
+        debug!("decided upon suite {:?}", suite);
 
         // Start handshake hash.
-        let starting_hash = sess
-            .common
-            .get_suite_assert()
-            .get_hash();
+        let starting_hash = suite.get_hash();
         if !self
             .handshake
             .transcript
@@ -766,11 +774,12 @@ impl State for ExpectClientHello {
         if sess.common.is_tls13() {
             return tls13::CompleteClientHelloHandling {
                 handshake: self.handshake,
+                suite,
                 randoms,
                 done_retry: self.done_retry,
                 send_ticket: self.send_ticket,
             }
-            .handle_client_hello(ciphersuite, sess, &certkey, &m);
+            .handle_client_hello(suite, sess, &certkey, &m);
         }
 
         // -- TLS1.2 only from hereon in --
@@ -829,11 +838,12 @@ impl State for ExpectClientHello {
                     .ticketer
                     .decrypt(&ticket.0)
                     .and_then(|plain| persist::ServerSessionValue::read_bytes(&plain))
-                    .and_then(|resumedata| can_resume(sess, self.using_ems, resumedata))
+                    .and_then(|resumedata| can_resume(suite, &sess.sni, self.using_ems, resumedata))
                 {
                     return self.start_resumption(
                         sess,
                         client_hello,
+                        suite,
                         sni.as_ref(),
                         &client_hello.session_id,
                         resume,
@@ -861,11 +871,12 @@ impl State for ExpectClientHello {
                 .session_storage
                 .get(&client_hello.session_id.get_encoding())
                 .and_then(|x| persist::ServerSessionValue::read_bytes(&x))
-                .and_then(|resumedata| can_resume(sess, self.using_ems, resumedata))
+                .and_then(|resumedata| can_resume(suite, &sess.sni, self.using_ems, resumedata))
             {
                 return self.start_resumption(
                     sess,
                     client_hello,
+                    suite,
                     sni.as_ref(),
                     &client_hello.session_id,
                     resume,
@@ -875,10 +886,7 @@ impl State for ExpectClientHello {
         }
 
         // Now we have chosen a ciphersuite, we can make kx decisions.
-        let sigschemes = sess
-            .common
-            .get_suite_assert()
-            .resolve_sig_schemes(&sigschemes_ext);
+        let sigschemes = suite.resolve_sig_schemes(&sigschemes_ext);
 
         if sigschemes.is_empty() {
             return Err(incompatible(sess, "no supported sig scheme"));
@@ -904,6 +912,7 @@ impl State for ExpectClientHello {
             (certkey.ocsp.as_deref(), certkey.sct_list.as_deref());
         self.emit_server_hello(
             sess,
+            suite,
             &mut ocsp_response,
             &mut sct_list,
             client_hello,
@@ -923,6 +932,7 @@ impl State for ExpectClientHello {
             Ok(Box::new(tls12::ExpectCertificate {
                 handshake: self.handshake,
                 randoms,
+                suite,
                 using_ems: self.using_ems,
                 server_kx,
                 send_ticket: self.send_ticket,
@@ -931,6 +941,7 @@ impl State for ExpectClientHello {
             Ok(Box::new(tls12::ExpectClientKX {
                 handshake: self.handshake,
                 randoms,
+                suite,
                 using_ems: self.using_ems,
                 server_kx,
                 client_cert: None,
