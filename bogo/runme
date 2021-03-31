@@ -24,5 +24,6 @@ cargo build --features="dangerous_configuration quic" --example bogo_shim
      -shim-config ../../../../config.json \
      -pipe \
      -allow-unimplemented \
-     -test.timeout 60s)
+     -test.timeout 60s \
+     "$@")
 true
